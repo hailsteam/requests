@@ -40,7 +40,8 @@ type ClientOption struct {
 	DialTimeout time.Duration //dial tcp timeout,default:15
 	KeepAlive   time.Duration //keepalive,default:30
 	LocalAddr   *net.TCPAddr
-	Dns         *net.UDPAddr  //dns
+	Dns         *net.UDPAddr //dns
+	ServerAddr  *net.IPAddr
 	AddrType    gtls.AddrType //dns parse addr type
 	Jar         *Jar          //custom cookies
 
@@ -78,6 +79,7 @@ type RequestOption struct {
 	KeepAlive   time.Duration //keepalive,default:30
 	LocalAddr   *net.TCPAddr
 	Dns         *net.UDPAddr  //dns
+	ServerAddr  *net.IPAddr   //don`t dns return parse
 	AddrType    gtls.AddrType //dns parse addr type                                             //tls timeout,default:15
 	Jar         *Jar          //custom cookies
 
@@ -283,6 +285,9 @@ func (obj *Client) newRequestOption(option RequestOption) RequestOption {
 	}
 	if option.Dns == nil {
 		option.Dns = obj.option.Dns
+	}
+	if option.ServerAddr == nil {
+		option.ServerAddr = obj.option.ServerAddr
 	}
 	if option.AddrType == 0 {
 		option.AddrType = obj.option.AddrType

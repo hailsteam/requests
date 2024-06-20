@@ -48,6 +48,7 @@ type reqCtxData struct {
 	localAddr   *net.TCPAddr  //network card ip
 	addrType    gtls.AddrType //first ip type
 	dns         *net.UDPAddr
+	serverAddr  *net.IPAddr
 	isNewConn   bool
 }
 
@@ -66,6 +67,7 @@ func NewReqCtxData(ctx context.Context, option *RequestOption) (*reqCtxData, err
 	ctxData.keepAlive = option.KeepAlive
 	ctxData.localAddr = option.LocalAddr
 	ctxData.dns = option.Dns
+	ctxData.serverAddr = option.ServerAddr
 	ctxData.disProxy = option.DisProxy
 	ctxData.tlsHandshakeTimeout = option.TlsHandshakeTimeout
 	//init scheme

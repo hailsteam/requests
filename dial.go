@@ -24,6 +24,7 @@ type DialClient struct {
 	dialer      *net.Dialer
 	dnsIpData   sync.Map
 	dns         *net.UDPAddr
+	serverAddr  *net.IPAddr
 	getAddrType func(host string) gtls.AddrType
 }
 type msgClient struct {
@@ -37,6 +38,7 @@ type DialOption struct {
 	LocalAddr   *net.TCPAddr  //network card ip
 	AddrType    gtls.AddrType //first ip type
 	Dns         *net.UDPAddr
+	ServerAddr  *net.IPAddr
 	GetAddrType func(host string) gtls.AddrType
 }
 
@@ -55,17 +57,21 @@ func NewDialer(option DialOption) *net.Dialer {
 	if option.LocalAddr != nil {
 		dialer.LocalAddr = option.LocalAddr
 	}
-	if option.Dns != nil {
-		dialer.Resolver = &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				return (&net.Dialer{
-					Timeout:   option.DialTimeout,
-					KeepAlive: option.KeepAlive,
-				}).DialContext(ctx, network, option.Dns.String())
-			},
+
+	if option.ServerAddr == nil {
+		if option.Dns != nil {
+			dialer.Resolver = &net.Resolver{
+				PreferGo: true,
+				Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+					return (&net.Dialer{
+						Timeout:   option.DialTimeout,
+						KeepAlive: option.KeepAlive,
+					}).DialContext(ctx, network, option.Dns.String())
+				},
+			}
 		}
 	}
+
 	dialer.SetMultipathTCP(true)
 	return dialer
 }
@@ -73,6 +79,7 @@ func NewDail(option DialOption) *DialClient {
 	return &DialClient{
 		dialer:      NewDialer(option),
 		dns:         option.Dns,
+		serverAddr:  option.ServerAddr,
 		getAddrType: option.GetAddrType,
 	}
 }
@@ -95,14 +102,22 @@ func (obj *DialClient) DialContext(ctx context.Context, ctxData *reqCtxData, net
 			} else if obj.getAddrType != nil {
 				addrType = obj.getAddrType(host)
 			}
-			ips, err := dialer.Resolver.LookupIPAddr(ctx, host)
-			if err != nil {
-				return nil, err
+			if ctxData.serverAddr == nil {
+				ips, err := dialer.Resolver.LookupIPAddr(ctx, host)
+				if err != nil {
+					return nil, err
+				}
+				if host, err = obj.addrToIp(host, ips, addrType); err != nil {
+					return nil, err
+				}
+				addr = net.JoinHostPort(host, port)
+			} else {
+				ips := []net.IPAddr{*ctxData.serverAddr}
+				if host, err = obj.addrToIp(host, ips, addrType); err != nil {
+					return nil, err
+				}
+				addr = net.JoinHostPort(host, port)
 			}
-			if host, err = obj.addrToIp(host, ips, addrType); err != nil {
-				return nil, err
-			}
-			addr = net.JoinHostPort(host, port)
 		}
 	}
 	if dialer == nil {
@@ -324,13 +339,18 @@ func (obj *DialClient) getDialer(ctxData *reqCtxData, parseDns bool) *net.Dialer
 			isNew = true
 		}
 	}
-	if ctxData.dns == nil {
-		dialOption.Dns = obj.dns
-	} else {
-		dialOption.Dns = ctxData.dns
-		if parseDns && ctxData.dns.String() != obj.dns.String() {
-			isNew = true
+
+	if ctxData.serverAddr == nil {
+		if ctxData.dns == nil {
+			dialOption.Dns = obj.dns
+		} else {
+			dialOption.Dns = ctxData.dns
+			if parseDns && ctxData.dns.String() != obj.dns.String() {
+				isNew = true
+			}
 		}
+	} else {
+		isNew = true
 	}
 	if isNew {
 		return NewDialer(dialOption)

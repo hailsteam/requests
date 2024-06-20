@@ -61,6 +61,7 @@ func newRoundTripper(preCtx context.Context, option ClientOption) *roundTripper 
 	dialClient := NewDail(DialOption{
 		DialTimeout: option.DialTimeout,
 		Dns:         option.Dns,
+		ServerAddr:  option.ServerAddr,
 		KeepAlive:   option.KeepAlive,
 		LocalAddr:   option.LocalAddr,
 		AddrType:    option.AddrType,
