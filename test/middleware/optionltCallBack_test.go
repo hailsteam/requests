@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gospider007/requests"
+	"github.com/hailsteam/requests"
 )
 
 func TestOptionCallBack(t *testing.T) {

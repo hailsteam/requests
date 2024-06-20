@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gospider007/requests"
+	"github.com/hailsteam/requests"
 )
 
 func TestSendFileWithReader(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/gospider007/requests"
+	"github.com/hailsteam/requests"
 )
 
 func TestLocalAddr(t *testing.T) {

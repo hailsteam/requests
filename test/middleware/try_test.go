@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gospider007/requests"
+	"github.com/hailsteam/requests"
 )
 
 func TestMaxRetries(t *testing.T) {

@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/gospider007/requests"
+	"github.com/hailsteam/requests"
 )
 
 func TestHttp2(t *testing.T) {

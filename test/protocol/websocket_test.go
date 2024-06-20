@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/gospider007/requests"
 	"github.com/gospider007/websocket"
+	"github.com/hailsteam/requests"
 )
 
 func TestWebSocket(t *testing.T) {

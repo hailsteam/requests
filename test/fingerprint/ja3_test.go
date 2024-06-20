@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/gospider007/ja3"
-	"github.com/gospider007/requests"
+	"github.com/hailsteam/requests"
 )
 
 func TestJa3(t *testing.T) {

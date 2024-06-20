@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/gospider007/requests"
+	"github.com/hailsteam/requests"
 )
 
 func TestProxy(t *testing.T) {
