@@ -2,6 +2,7 @@ package requests
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -221,16 +222,183 @@ func redirectBehavior(reqMethod string, resp *http.Response, ireq *http.Request)
 	return
 }
 
-// ---- readTransfer (简化版，只做占位，避免编译错误) ----
-func readTransfer(msg any, r *bufio.Reader) (err error) {
-	// 在 Go1.21+ 已经完全重构，原始内部实现不可直接调用
-	// 这里给出简化逻辑：仅保证接口兼容
-	if _, ok := msg.(*http.Request); ok {
-		// 读 Body 到 EOF
-		_, err = io.ReadAll(r)
-		return err
+// helper: 是否包含 chunked
+func containsChunked(te []string) bool {
+	for _, v := range te {
+		if strings.EqualFold(v, "chunked") {
+			return true
+		}
 	}
-	return errors.New("unsupported type for readTransfer")
+	return false
+}
+
+// chunkedReader: streaming 解析 chunked body，並在遇到 0-chunk 時把 trailer 寫回 resp.Trailer
+type chunkedReader struct {
+	r    *bufio.Reader
+	tr   *textproto.Reader
+	resp *http.Response
+
+	rem  int64 // 剩餘 bytes in current chunk
+	done bool
+}
+
+func newChunkedReader(r *bufio.Reader, resp *http.Response) *chunkedReader {
+	return &chunkedReader{
+		r:    r,
+		tr:   textproto.NewReader(r),
+		resp: resp,
+	}
+}
+
+func (cr *chunkedReader) Read(p []byte) (int, error) {
+	if cr.done {
+		return 0, io.EOF
+	}
+
+	// 如果當前 chunk 還有剩餘，從 r 讀取（最多讀 len(p) 或 rem）
+	if cr.rem > 0 {
+		toRead := int64(len(p))
+		if toRead > cr.rem {
+			toRead = cr.rem
+		}
+		n, err := io.ReadFull(cr.r, p[:toRead])
+		if n > 0 {
+			cr.rem -= int64(n)
+			// 如果剛好讀完 chunk，消耗後面的 CRLF
+			if cr.rem == 0 {
+				// consume CRLF after chunk
+				// 常見為 "\r\n"，我們做容錯處理
+				b, err2 := cr.r.ReadByte()
+				if err2 == nil {
+					if b == '\r' {
+						// try read '\n'
+						if _, _ = cr.r.ReadByte(); true {
+						}
+					} else if b == '\n' {
+						// ok
+					} else {
+						// 非預期字元：放回一個 byte (impossible with bufio), so ignore
+					}
+				} else {
+					// ignore
+				}
+			}
+			return n, err
+		}
+		return n, err
+	}
+
+	// 當前 chunk 已耗盡，需解析下一個 chunk size 行
+	line, err := cr.tr.ReadLine()
+	if err != nil {
+		return 0, err
+	}
+	// chunk-size 可能有 extensions，取分號前
+	if idx := strings.IndexByte(line, ';'); idx != -1 {
+		line = line[:idx]
+	}
+	sz, err := strconv.ParseInt(strings.TrimSpace(line), 16, 64)
+	if err != nil {
+		return 0, err
+	}
+	if sz == 0 {
+		// 讀 trailers（MIME headers），並放入 resp.Trailer
+		mimeHeader, err := cr.tr.ReadMIMEHeader()
+		if err != nil {
+			return 0, err
+		}
+		if cr.resp != nil {
+			cr.resp.Trailer = http.Header(mimeHeader)
+		}
+		cr.done = true
+		return 0, io.EOF
+	}
+	cr.rem = sz
+	// 現在遞迴呼叫自己去讀 chunk 內容
+	return cr.Read(p)
+}
+
+func (cr *chunkedReader) Close() error {
+	// 保守處理：若尚未完成，讀完剩下的 chunk，確保 trailer 被讀入
+	if cr.done {
+		return nil
+	}
+	var buf [1024]byte
+	for {
+		_, err := cr.Read(buf[:])
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// readTransfer: 解析 msg (*http.Request 或 *http.Response) 的 body，並把 Body 設回去
+func readTransfer(msg any, r *bufio.Reader) (err error) {
+	switch m := msg.(type) {
+	case *http.Request:
+		// Request: 以 ContentLength / TransferEncoding 判斷
+		// 優先使用 Request.ContentLength（如果已被解析）
+		if m.ContentLength > 0 {
+			m.Body = io.NopCloser(io.LimitReader(r, m.ContentLength))
+			return nil
+		}
+		// 如果 TransferEncoding 含 chunked（或 header 標記 chunked），使用 chunkedReader
+		if containsChunked(m.TransferEncoding) || strings.EqualFold(m.Header.Get("Transfer-Encoding"), "chunked") {
+			m.Body = io.NopCloser(newChunkedReader(r, nil))
+			return nil
+		}
+		// 否則視為沒有 body（或 identity）：設為 NoBody
+		m.Body = http.NoBody
+		return nil
+
+	case *http.Response:
+		// Response: 若為 HEAD 或任意 no-body status code，則無 body
+		if m.Request != nil && m.Request.Method == http.MethodHead {
+			m.Body = http.NoBody
+			return nil
+		}
+		if (m.StatusCode >= 100 && m.StatusCode < 200) || m.StatusCode == 204 || m.StatusCode == 304 {
+			m.Body = http.NoBody
+			return nil
+		}
+
+		// chunked?
+		if containsChunked(m.TransferEncoding) || strings.EqualFold(m.Header.Get("Transfer-Encoding"), "chunked") {
+			m.Body = io.NopCloser(newChunkedReader(r, m))
+			return nil
+		}
+
+		// Content-Length?
+		if cl := m.Header.Get("Content-Length"); cl != "" {
+			n, err := strconv.ParseInt(strings.TrimSpace(cl), 10, 64)
+			if err == nil {
+				if n == 0 {
+					m.Body = http.NoBody
+					return nil
+				}
+				m.Body = io.NopCloser(io.LimitReader(r, n))
+				return nil
+			}
+			// parse error -> fallthrough to identity handling
+		}
+
+		// identity (no length & no chunked)：
+		// * 標準庫在這種情況會把 body 視為直到 connection close，
+		//   正確處理需要在 higher-level 管理 connection；這裡簡單採一次性讀取到記憶體作為兜底，
+		//   若資料很大或希望 streaming，應改為把整個連線 lifecycle 的責任一起移植/管理。
+		all, err := io.ReadAll(r)
+		if err != nil && err != io.EOF {
+			return err
+		}
+		m.Body = io.NopCloser(bytes.NewReader(all))
+		return nil
+
+	default:
+		return errors.New("unsupported type for readTransfer")
+	}
 }
 
 var filterHeaderKeys = ja3.DefaultOrderHeadersWithH2()
