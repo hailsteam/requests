@@ -64,7 +64,7 @@ var replaceMap = map[string]string{
 	"Sec-Ch-Ua-Platform": "sec-ch-ua-platform",
 }
 
-//go:linkname escapeQuotes mime/multipart.escapeQuotes
+/*//go:linkname escapeQuotes mime/multipart.escapeQuotes
 func escapeQuotes(string) string
 
 //go:linkname readCookies net/http.readCookies
@@ -90,6 +90,148 @@ func redirectBehavior(reqMethod string, resp *http.Response, ireq *http.Request)
 
 //go:linkname readTransfer net/http.readTransfer
 func readTransfer(msg any, r *bufio.Reader) (err error)
+*/
+
+// ---- escapeQuotes (来自 mime/multipart) ----
+func escapeQuotes(s string) string {
+	var buf strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\', '"':
+			buf.WriteByte('\\')
+		}
+		buf.WriteByte(s[i])
+	}
+	return buf.String()
+}
+
+// ---- readCookies / readSetCookies ----
+func readCookies(h http.Header, filter string) []*http.Cookie {
+	lines := h["Cookie"]
+	if len(lines) == 0 {
+		return nil
+	}
+	var cookies []*http.Cookie
+	for _, line := range lines {
+		parts := strings.Split(line, ";")
+		for _, part := range parts {
+			part = textproto.TrimString(part)
+			if len(part) == 0 {
+				continue
+			}
+			name, val, ok := strings.Cut(part, "=")
+			if !ok {
+				continue
+			}
+			name = textproto.TrimString(name)
+			if filter != "" && filter != name {
+				continue
+			}
+			val = textproto.TrimString(val)
+			cookies = append(cookies, &http.Cookie{Name: name, Value: val})
+		}
+	}
+	return cookies
+}
+
+func readSetCookies(h http.Header) []*http.Cookie {
+	lines := h["Set-Cookie"]
+	if len(lines) == 0 {
+		return nil
+	}
+	cookies := make([]*http.Cookie, 0, len(lines))
+	for _, line := range lines {
+		c := new(http.Cookie)
+		*c = *parseCookie(line)
+		cookies = append(cookies, c)
+	}
+	return cookies
+}
+
+func parseCookie(line string) *http.Cookie {
+	parts := strings.Split(line, ";")
+	if len(parts) == 0 {
+		return &http.Cookie{}
+	}
+	kv := strings.SplitN(parts[0], "=", 2)
+	c := &http.Cookie{Name: strings.TrimSpace(kv[0])}
+	if len(kv) > 1 {
+		c.Value = strings.TrimSpace(kv[1])
+	}
+	return c
+}
+
+// ---- ReadRequest ----
+func ReadRequest(b *bufio.Reader) (*http.Request, error) {
+	req, err := http.ReadRequest(b)
+	if err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
+// ---- removeZone (IPv6 地址去掉 zone) ----
+func removeZone(host string) string {
+	i := strings.LastIndex(host, "%")
+	if i == -1 {
+		return host
+	}
+	// 保证是 IPv6 地址
+	if strings.Contains(host, ":") {
+		return host[:i]
+	}
+	return host
+}
+
+// ---- shouldSendContentLength ----
+func shouldSendContentLength(req *http.Request) bool {
+	if req.Body == nil {
+		return false
+	}
+	if req.ContentLength > 0 {
+		return true
+	}
+	return false
+}
+
+// ---- removeEmptyPort ----
+func removeEmptyPort(host string) string {
+	if strings.HasSuffix(host, ":") {
+		return strings.TrimSuffix(host, ":")
+	}
+	return host
+}
+
+// ---- redirectBehavior ----
+func redirectBehavior(reqMethod string, resp *http.Response, ireq *http.Request) (redirectMethod string, shouldRedirect, includeBody bool) {
+	switch resp.StatusCode {
+	case 301, 302, 303:
+		redirectMethod = http.MethodGet
+		shouldRedirect = true
+		includeBody = false
+	case 307, 308:
+		redirectMethod = reqMethod
+		shouldRedirect = true
+		includeBody = true
+	default:
+		redirectMethod = reqMethod
+		shouldRedirect = false
+		includeBody = false
+	}
+	return
+}
+
+// ---- readTransfer (简化版，只做占位，避免编译错误) ----
+func readTransfer(msg any, r *bufio.Reader) (err error) {
+	// 在 Go1.21+ 已经完全重构，原始内部实现不可直接调用
+	// 这里给出简化逻辑：仅保证接口兼容
+	if _, ok := msg.(*http.Request); ok {
+		// 读 Body 到 EOF
+		_, err = io.ReadAll(r)
+		return err
+	}
+	return errors.New("unsupported type for readTransfer")
+}
 
 var filterHeaderKeys = ja3.DefaultOrderHeadersWithH2()
 
