@@ -363,7 +363,7 @@ func (obj *DialClient) addTls(ctx context.Context, conn net.Conn, host string, d
 	tlsConfig.ServerName = gtls.GetServerName(host)
 	if disHttp2 {
 		tlsConfig.NextProtos = []string{"http/1.1"}
-	} else {
+	} else if len(tlsConfig.NextProtos) == 0 {
 		tlsConfig.NextProtos = []string{"h2", "http/1.1"}
 	}
 	tlsConn = tls.Client(conn, tlsConfig)
@@ -373,7 +373,7 @@ func (obj *DialClient) addJa3Tls(ctx context.Context, conn net.Conn, host string
 	tlsConfig.ServerName = gtls.GetServerName(host)
 	if disHttp2 {
 		tlsConfig.NextProtos = []string{"http/1.1"}
-	} else {
+	} else if len(tlsConfig.NextProtos) == 0 {
 		tlsConfig.NextProtos = []string{"h2", "http/1.1"}
 	}
 	return ja3.NewClient(ctx, conn, ja3Spec, disHttp2, tlsConfig)
