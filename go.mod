@@ -1,6 +1,6 @@
 module github.com/hailsteam/requests
 
-go 1.24.5
+go 1.23
 
 require (
 	github.com/gospider007/bar v0.0.0-20231215084215-956cfa59ce61
