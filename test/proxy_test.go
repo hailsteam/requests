@@ -9,8 +9,8 @@ import (
 )
 
 func TestProxy(t *testing.T) {
-	resp, err := requests.Get(nil, "https://google.com", requests.RequestOption{
-		Proxy: "http://127.0.0.1:10808", //set proxy,ex:"http://127.0.0.1:8080","https://127.0.0.1:8080","socks5://127.0.0.1:8080"
+	resp, err := requests.Get(nil, "https://baidu.com", requests.RequestOption{
+		Proxy: "http://127.0.0.1:7890", //set proxy,ex:"http://127.0.0.1:8080","https://127.0.0.1:8080","socks5://127.0.0.1:8080"
 	})
 	if err != nil {
 		t.Error(err)
