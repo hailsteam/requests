@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/textproto"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -125,37 +127,137 @@ func (obj *DialClient) DialContext(ctx context.Context, ctxData *reqCtxData, net
 	}
 	return dialer.DialContext(ctx, network, addr)
 }
-func (obj *DialClient) DialContextWithProxy(ctx context.Context, ctxData *reqCtxData, network string, scheme string, addr string, host string, proxyUrl *url.URL, tlsConfig *tls.Config) (net.Conn, error) {
+
+func (obj *DialClient) DialContextWithProxy(
+	ctx context.Context,
+	ctxData *reqCtxData,
+	network string,
+	scheme string,
+	addr string, // example.com:443
+	host string,
+	proxyUrl *url.URL,
+	tlsConfig *tls.Config, // ⚠️ 这是目标 TLS config，不用于 proxy
+) (net.Conn, error) {
+
 	if ctxData == nil {
 		ctxData = &reqCtxData{}
 	}
+
+	// ================= 无代理：直连目标 =================
 	if proxyUrl == nil {
 		return obj.DialContext(ctx, ctxData, network, addr)
 	}
+
+	// ================= 补 proxy 端口 =================
 	if proxyUrl.Port() == "" {
-		if proxyUrl.Scheme == "http" {
+		switch proxyUrl.Scheme {
+		case "http":
 			proxyUrl.Host = net.JoinHostPort(proxyUrl.Hostname(), "80")
-		} else if proxyUrl.Scheme == "https" {
+		case "https":
 			proxyUrl.Host = net.JoinHostPort(proxyUrl.Hostname(), "443")
 		}
 	}
+
 	switch proxyUrl.Scheme {
+
+	// ================= HTTP / HTTPS PROXY =================
 	case "http", "https":
-		conn, err := obj.DialContext(ctx, ctxData, network, net.JoinHostPort(proxyUrl.Hostname(), proxyUrl.Port()))
+		// 1️⃣ 先 TCP 连接 proxy
+		conn, err := obj.DialContext(
+			ctx, ctxData, network,
+			net.JoinHostPort(proxyUrl.Hostname(), proxyUrl.Port()),
+		)
 		if err != nil {
-			return conn, err
-		} else if proxyUrl.Scheme == "https" {
-			if conn, err = obj.addTls(ctx, conn, proxyUrl.Host, true, tlsConfig); err != nil {
-				return conn, err
+			return nil, err
+		}
+
+		// 2️⃣ HTTPS proxy：只给 proxy 做 TLS（⚠️ 独立 config）
+		if proxyUrl.Scheme == "https" {
+			proxyTLS := &tls.Config{
+				ServerName: proxyUrl.Hostname(), // ⚠️ 不能用 proxyUrl.Host
+				NextProtos: []string{"http/1.1"},
+			}
+			if conn, err = obj.addTls(ctx, conn, proxyUrl.Hostname(), true, proxyTLS); err != nil {
+				conn.Close()
+				return nil, err
 			}
 		}
-		return conn, obj.clientVerifyHttps(ctx, scheme, proxyUrl, addr, host, conn)
+
+		// 3️⃣ 🔴 关键：完成 HTTP CONNECT（必须读完整 header）
+		if err := obj.httpProxyConnect(ctx, conn, addr); err != nil {
+			conn.Close()
+			return nil, err
+		}
+
+		// ✅ 返回的是：已经 CONNECT 到目标服务器的 TCP
+		return conn, nil
+
+	// ================= SOCKS5 =================
 	case "socks5":
+		// Socks5Proxy 必须保证：返回的是直达目标的 conn
 		return obj.Socks5Proxy(ctx, ctxData, network, addr, proxyUrl)
+
 	default:
-		return nil, errors.New("proxyUrl Scheme error")
+		return nil, errors.New("proxyUrl scheme error")
 	}
 }
+
+type peekConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (p *peekConn) Read(b []byte) (int, error) {
+	return p.r.Read(b)
+}
+
+func (obj *DialClient) httpProxyConnect(
+	ctx context.Context,
+	conn net.Conn,
+	targetAddr string, // example.com:443
+) error {
+
+	req := fmt.Sprintf(
+		"CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Connection: Keep-Alive\r\n\r\n",
+		targetAddr, targetAddr,
+	)
+
+	if _, err := conn.Write([]byte(req)); err != nil {
+		return err
+	}
+
+	br := bufio.NewReader(conn)
+
+	// 1️⃣ 读 status line
+	statusLine, err := br.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(statusLine, "200") {
+		return fmt.Errorf("proxy CONNECT failed: %s", strings.TrimSpace(statusLine))
+	}
+
+	// 2️⃣ 读完整 header（⚠️ 必须）
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+
+	// 3️⃣ 把 reader 交还给上层（关键）
+	if pc, ok := conn.(*peekConn); ok {
+		pc.r = br
+	} else {
+		conn = &peekConn{Conn: conn, r: br}
+	}
+
+	return nil
+}
+
 func (obj *DialClient) loadHost(host string) (string, bool) {
 	msgDataAny, ok := obj.dnsIpData.Load(host)
 	if ok {
